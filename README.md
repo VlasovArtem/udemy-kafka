@@ -174,3 +174,104 @@ Zookeeper does NOT store consumer offsets with Kafka > v0.10
    * Allows for one broker to be taken down for maintenance
    * Allows for another broker to be taken down unexpectedly
 5. As long as the number of partitions remains constant for a topic (no new partitions), the same key will always go to the same partition
+
+# CLI
+
+## Kafka topics
+
+Create topic
+
+```
+kafka-topics --zookeeper 127.0.0.1:2181 --topic first_topic --create --partitions 3 --replication-factor 1
+```
+
+Show list of topics
+
+```
+ kafka-topics --zookeeper 127.0.0.1:2181 --list
+```
+
+Information about topic
+
+```
+kafka-topics --zookeeper 127.0.0.1:2181 --topic first_topic --describe
+```
+
+Delete topic, will mark topic as deleted 
+
+```
+kafka-topics --zookeeper 127.0.0.1:2181 --topic second_topic --create --partitions 6 --replication-factor 1
+kafka-topics --zookeeper 127.0.0.1:2181 --topic second_topic --delete
+```
+
+## Kafka console consumer
+
+Create consumer
+
+```bash
+kafka-console-consumer --bootstrap-server 127.0.0.1:9092 --topic first_topic
+```
+
+Create consumer from the begging
+
+```bash
+kafka-console-consumer --bootstrap-server 127.0.0.1:9092 --topic first_topic --from-beginning
+```
+
+With group
+
+```bash
+kafka-console-consumer --bootstrap-server 127.0.0.1:9092 --topic first_topic --group my-first-application
+```
+
+Consumers with the same group will split messages between this consumers, for example first_message will be received by first consumer, second_message will be received by second consumer. First consumer will not receive second_message. When you start or stop consumer they will rebalanced automatically.
+
+If you run `kafka-console-consumer --bootstrap-server 127.0.0.1:9092 --topic first_topic --group my-second-application --from-beginning` multiple times, then on the second time you will not see any topics even if you specify **--from-beginning** it happens because of committed-offset. Because consumer with this group already read all messages, and you will receive only new messages. It will work if kafka do not contains any new messages, if it has, then consumer will receive all new messages from offset that was committed (even without --from-begenning).
+
+## Kafka console producer
+
+Create consumer
+
+```bash
+kafka-console-producer --broker-list 127.0.0.1:9092 --topic first_topic
+```
+
+With property acks=all
+
+```bash
+kafka-console-producer --broker-list 127.0.0.1:9092 --topic first_topic --producer-property acks=all
+```
+
+With not exists topic (new topic will be created) - Try NOT to use this feature. Because in this case topic will be created with default replication factor = 1 and partitions = 1. Default values can be changed in server.properties
+
+```bash
+kafka-console-producer --broker-list 127.0.0.1:9092 --topic new_topic
+```
+
+## Kafka consumers groups
+
+Show all consumer groups
+
+```bash
+kafka-consumer-groups --bootstrap-server 127.0.0.1:9092 --list
+```
+
+Information about group (consumers, offsets)
+
+```bash
+kafka-consumer-groups --bootstrap-server 127.0.0.1:9092 --describe --group my-second-application
+```
+
+Resetting offsets to the beginning
+
+```bash
+kafka-consumer-groups --bootstrap-server 127.0.0.1:9092 --group my-second-application --reset-offsets --to-earliest --execute --topic first_topic
+```
+
+Resetting offsets with particular shift
+
+```bash
+kafka-consumer-groups --bootstrap-server 127.0.0.1:9092 --group my-second-application --reset-offsets --execute --topic first_topic --shift-by -2
+```
+
+This command will shift offset by two for each partition (if you have 3 partitions, then you will receive 6 messages)
