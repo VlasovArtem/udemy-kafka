@@ -305,6 +305,24 @@ The formula is:
 
 This means that same key will go to the same partition, and adding partitions to a topic will completely alter the formula
 
+## Advanced configuration
+
+If the producer produces faster than broker can take, the records will be buffered in memory
+
+**buffer.memory=33554432** (32M) the size of the send buffer
+
+That buffer will fill up over time and fill back down when the throughput to the broker increases
+
+If the buffer is full (all 32Mb), then the .send() method will start to block (won't return right away)
+
+**max.block.ms=60000** the time the .send() will block until throwing an exception. Exceptions are basically thrown when:
+
+* The producer has filled up its buffer
+* The broker is not accepting any new data
+* 60 seconds has elapsed
+
+If you hit an exception hit that usually means your brokers are down or overloaded as they can't respond to requests
+
 # Consumers
 
 Consumers read data from a topic (identified by name)
