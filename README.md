@@ -94,6 +94,217 @@ If a key is sent, then all messages for that key will always go to the same part
 
 A key is basically sent if you need message ordering for a specific field. This guarantee thanks to key hashing, which depends on the number of partitions.
 
+## Acks Deep Dive
+
+### acks=0 (no acks)
+
+No response is requested
+
+If the broker goes offline or an exception happens, we won't know and will lose data
+
+Useful for data where it's okay to potentially lose messages
+
+### acks=1 (leader acks)
+
+Leader response is requested, but replication is not a guarantee (happens in the background)
+
+If an ack is not received, the producer may retry
+
+![acks1](./images/acks1.png)
+
+If the leader broker goes offline but replicas haven't replicated the data yet, we have a data loss
+
+### acks=all (replicas acks)
+
+Leader + Replicas ack requested
+
+Added <u>latency</u> and <u>safety</u>
+
+No data loss if enough replicas
+
+acks=all must be used in conjuction with **min.insync.replicas**
+
+**min.insync.replicas** can be set at the broker or topic level (override).
+
+**min.insync.replicas=2** implies that at least 2 brokers that are ISR (including leader) must respond that they have the data
+
+That means if you use **replication.factor=3**, **min.insync=2**, **acks=all**, you can only tolerate **1** broker going down, otherwise the producer will receive an exception on send.
+
+![acksall](./images/acksall.png)
+
+In case of **min.insync.replicas=2**
+
+![acksallmin2](./images/acksallmin2.png)
+
+## Producer Retries
+
+In case of transient failures, developers are expected to handle exceptions, otherwise the data will be lost.
+
+Example of transient failure:
+
+* NotEnoughReplicasException
+
+There is a **retries** setting
+
+* defaults to 0 for Kafka <= 2.0
+* defaults to 2147483647 for Kafka >= 2.1
+
+The **retry.backoff.ms** setting is by default 100 ms
+
+### Producer timeouts
+
+If retries > 0, for example retries = 2147483647
+
+the producer won't try the request for ever, it's bounded by a timeout.
+
+For this, you can set an intuitive Producer Timeout (KIP-91 - Kafka 2.1)
+
+**delivery.timeout.ms** = 120000 ms == 2 minutes
+
+Records will be failed if they can't be acknowledged in delivery.timeout.ms
+
+### Warning
+
+In case of retries, there is a chance that messages will be sent out of order (if a batch has failed to be sent).
+
+**If you rely on key-based ordering, that can be an issue.**
+
+For this, you can set the setting while controls how many produce requests can be made in parallel: **max.in.flight.requests.per.connection**
+
+* default - 5
+* Set it to 1 if you beed to ensure ordering (may impact throughput)
+
+In Kafka => 1.0.0, there is a better solution with idempotent producers!
+
+## Idempotent Producer
+
+Here is the problem: the Producer can introduce duplicate messages in Kafka due to network errors
+
+![duplicate-message](./images/duplicate-message.png)
+
+In Kafka >= 0.11m you can define a "idempotent producer" which won't introduce on network error
+
+![indepotent-producer](./images/indepotent-producer.png)
+
+Idempotent producers are great to guarantee a stable and safe pipeline!
+
+They come with:
+
+* retries = Integer.MAX_VALUE(2^31-1 = 2147483647)
+* max.in.flight.request=1 (Kafka == 0.11) or
+* max.in.flight.request=5 (Kafka >= 1.0 - higher performance & keep ordering)
+  * See https://issues.apache.org/jira/browse/KAFKA-5494
+* acks=all
+
+These settings are applied automatically after your producer has started if you don't set them manually
+
+Just set:
+
+**enable.indepotence=true**
+
+## Safe producer summary
+
+Kafka < 0.11
+
+**acks=all** (producer level)
+
+* Ensures data is properly replicate before an ack is received
+
+**min.insync.replicas=2** (broker/topic level)
+
+* Ensures two brokers in ISR at least have the data after an ack
+
+**retries=MAX_INT** (producer level)
+
+* Ensures transient errors are retried indefinitely 
+
+**max.in.flight.requests.per.connection=1** (producer level)
+
+* Ensures only one request is tried at any time, preventing message re-ordering in case of retries
+
+Kafka >= 0.11
+
+**enable.indepontence=true** (producer level) + **min.insync.replicas=2** (broker/topic level)
+
+* Implies **acks=all**, **retries=MAX_INT**, **max.in.flight.requests.per.connection=1** if Kafka 0.11 or 5 if Kafka >= 1.0 while keeping ordering guarantees and improving performance!
+
+Running a "safe producer" might impact throughput and latency, always test for your use case
+
+## Message Compression
+
+Producer usually send data that is text-based, for example with JSON data
+
+In this case, it is important to apply compression to the producer
+
+Compression is enabled at the Producer level and doesn't required any configuration change in the Brokers or in the Consumers
+
+**compression.type** can be **none** (default), **gzip**, **lz4**, **snappy**
+
+Compression is more effective the bigger the batch of message being sent to Kafka!
+
+Benchmarks here: https://blog.cloudflare.com/squeezing-the-firehouse/
+
+![message-compression](./images/message-compression.png)
+
+The compressed batch has the following advantage:
+
+* Much smaller producer request size (compression ration up to 4x!)
+* Faster to transfer data over the network => less latency
+* Better throughput
+* Better disk utilisation in Kafka (stored messages on disk are smaller)
+
+Disadvantages (very minor):
+
+* Producers must commit some CPU cycles to compression
+* Consumers must commit some CPU cycles to decompression
+
+Overall:
+
+* Consider testing snappy or lz4 for optimal speed / compression ratio
+
+## Producer Batching
+
+By default, Kafka tries to send records as soon as possible
+
+* It will have up to 5 request in flight, meaning up to 5 messages individually sent at the same time.
+* After this, if more messages have to be sent while others are in flight, Kafka is smart and will start batching them while they wait to send them all at once.
+
+This smart batching allow Kafka to increase throughput while maintaining very low latency
+
+Batches have higher compression ratio so better efficiency
+
+**linger.ms** - Number of milliseconds a producer is willing to wait before sending a batch out (default 0)
+
+By introducing some lag (for example **linger.ms=5**), we increase the chances of messages being sent together in a batch
+
+So at the expense of introducing a small delay, we can increase throughput, compression and efficiency of our producer.
+
+If a batch is full (see **batch.size**) before the end of the **linger.ms** period, it will be sent to Kafka right away!
+
+![linger-ms](./images/linger-ms.png)
+
+**batch.size** - Maximum number of bytes that will be included in a batch. The default is 16KB.
+
+Increase a batch size to something like 32KB or 64KB can help increasing the compression, throughput, and efficiency of requests
+
+Any message that is bigger than the batch size will not be batched
+
+A batch is allocated per partition, so make sure that you don't set it to a number that's too high, otherwise you'll run waste of memory!
+
+(Note: You can monitor the average batch size metric using Kafka Producer Metrics)
+
+## Producer default partitioner and how keys are hashed
+
+By default, your keys are hashed using the **murmur2** algorithm
+
+it is most likely preferred to not override the behaviour of the partitioner, but it is possible to do so (**partitioner.class**)
+
+The formula is:
+
+``targetPartition = Utils.abs(Utils.murmur2(record.key())) % numPartitions;``
+
+This means that same key will go to the same partition, and adding partitions to a topic will completely alter the formula
+
 # Consumers
 
 Consumers read data from a topic (identified by name)
@@ -262,7 +473,7 @@ Information about group (consumers, offsets)
 kafka-consumer-groups --bootstrap-server 127.0.0.1:9092 --describe --group my-second-application
 ```
 
-Resetting offsets to the beginning
+Resetting offsets to the begenning
 
 ```bash
 kafka-consumer-groups --bootstrap-server 127.0.0.1:9092 --group my-second-application --reset-offsets --to-earliest --execute --topic first_topic
@@ -275,3 +486,26 @@ kafka-consumer-groups --bootstrap-server 127.0.0.1:9092 --group my-second-applic
 ```
 
 This command will shift offset by two for each partition (if you have 3 partitions, then you will receive 6 messages)
+
+# Twitter APP
+
+Source folder - org.avlasov.kafka.twitterapp
+
+Application start ``java -cp MyJar.jar org.avlasov.kafka.twitterapp.TwitterProducer /path/twitter-app.properties ``
+
+**twitter-app.properties** example
+
+```properties
+twitter.oauth.consumer.key=
+twitter.oauth.consumer.secret=
+twitter.oauth.token=
+twitter.oauth.token.secret=
+bootstrap.servers=127.0.0.1:9092
+key.serializer=org.apache.kafka.common.serialization.StringSerializer
+value.serializer=org.apache.kafka.common.serialization.StringSerializer
+twitter.search.terms=bitcoin
+kafka.topic=twitter_tweets
+```
+
+For twitter.oauth, please, create an application on https://developer.twitter.com/en.html
+
