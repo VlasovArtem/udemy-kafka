@@ -370,6 +370,131 @@ There are 3 delivery semantics:
    * Can achieved for Kafka => Kafka workflows using Kafka Streams API
    * For Kafka => External System workflows, use a <u>idempotent</u> consumer
 
+At most once example
+
+Error
+
+![delivery_semantics_at_most_once_error](./images/delivery_semantics_at_most_once_error.png)
+
+When consumer comes back
+
+![delivery_semantics_at_most_once](./images/delivery_semantics_at_most_once.png)
+
+At least once example
+
+Error
+
+![delivery_semantics_at_least_once_error](./images/delivery_semantics_at_least_once_error.png)
+
+When consumer comes back
+
+![delivery_semantics_at_least_once](./images/delivery_semantics_at_least_once.png)
+
+### Commits strategies
+
+There are two most common patterns for commotion offsets in a consumer application:
+
+* (easy) **enable.auto.commit=true** & synchronous processing of batches
+
+```java
+while (true) {
+	List<Records> batch = consumer.poll(Duration.ofMillis(100))
+	doSomethingSynchronous(batch)
+}
+```
+
+With auto-commit, offsets will be committed automatically for you at regular interval (**auto.commit.interval.ms=5000** by default) every time you call .poll()
+
+If you don't use synchronous processing, you will be in "at-most-once" behaviour because offsets will be committed before your data is processed
+
+* (medium) **enable.auto.commit=false** & manual commit of offsets
+
+**enable.auto.commit=false** & synchronous processing of batches
+
+```
+while (true) {
+	batch += consumer.poll(Duration.ofMillis(100))
+	if isReady(batch) {
+		doSomethingSynchronous(batch)
+		consumer.commitSync();
+	}
+}
+```
+
+You control when you commit offsets and what's the condition for committing them
+
+*Example: accumulation records into a buffer and then flushing the buffer to a database + committing offsets then*
+
+### Reset behaviour
+
+A consumer is expected to read from a log continuously.
+
+![consumer_offset_reset_behaviour](./images/consumer_offset_reset_behaviour.png)
+
+But if your application has a bug, your consumer can be down.
+
+If Kafka has a retention of 7 days, and your consumer is down for more than 7 days, the offsets are "invalid"
+
+The behaviour for the consumer is to then use:
+
+* **auto.offset.reset=latest** - will read from the end of the log
+* **auto.offset.reset=earliest** - will read from the start of the log
+* **auto.offset.reset=none** - will throw an exception if no offset is found
+
+Additionally, consumer offsets can be lost:
+
+* If a consumer hasn't read new data in 1 day (Kafka < 2.0)
+* If a consumer hasn't read new data in 7 day (Kafka >= 2.0)
+
+This can be controlled by the broker setting **offset.retention.minutes**
+
+To replay data for a consumer group:
+
+* Take all the consumers from a specific group down
+* Use 'kafka-consumer-groups' command to set offset to what you want
+* Restart consumers
+
+<u>Bottom line</u>:
+
+* Set proper data retention period & offset retention period
+* Ensure the auto offset reset behaviour is the one you expect / want
+* Use replay capability in case of unexpected bahaviour
+
+## Controlling consumer liveliness
+
+Consumers in a Group talk to a consumer groups coordinator
+
+To detect consumers that are "down", there is a "heartbeat" mechanism and a "poll" mechanism
+
+To avoid issues, consumers are encouraged to process data fast and poll then
+
+![poll-heartbeat](./images/poll-heartbeat.png)
+
+### Consumer Heartbeat Thread
+
+**session.timeout.ms** (default 10 seconds):
+
+* Heartbeats are sent periodically to the broker
+* If no heartbeat is sent during that period, the consumer is considered dead
+* Set even lower to faster consumer rebalances
+
+**heartbeat.interval.ms** (default 3 seconds):
+
+* How often to send heartbeats
+
+* Usually set to 1/3rd of **session.timeout.ms**
+
+<u>Take-away: This mechanism is used to detect a consumer application being down</u>
+
+### Consumer Poll Thread
+
+**max.poll.interval.ms** (default 5 minutes):
+
+* Maximum amount of time between two .poll() calls before declaring the consumer dead
+* This is particular relevant for Big Data frameworks like Spark in case the processing takes time
+
+<u>Take-away: This mechanism is used to detect a consumer application being down</u>
+
 # Kafka Broker Discovery
 
 Every Kafka broker is also called a "bootstrap server"
@@ -505,6 +630,24 @@ kafka-consumer-groups --bootstrap-server 127.0.0.1:9092 --group my-second-applic
 
 This command will shift offset by two for each partition (if you have 3 partitions, then you will receive 6 messages)
 
+#  Kafka Connect
+
+![kafka_connect](./images/kafka_connect.png)
+
+Source connectors to get data from common data sources
+
+Sink connectors to publish that data in common data stores
+
+Make it easy for non-experienced dev to quickly get their data reliably into Kafka
+
+Part of your ETL pipeline
+
+Scaling made easy from small pipelines to company-wide pipelines
+
+Re-usable code
+
+https://www.confluent.io/product/connectors-repository/
+
 # Twitter APP
 
 Source folder - org.avlasov.kafka.twitterapp
@@ -527,3 +670,6 @@ kafka.topic=twitter_tweets
 
 For twitter.oauth, please, create an application on https://developer.twitter.com/en.html
 
+# Elasticsearch
+
+https://bonsai.io/
